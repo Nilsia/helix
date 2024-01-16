@@ -1,10 +1,31 @@
 use std::collections::HashMap;
 
-use super::macros::keymap;
-use super::{KeyTrie, Mode};
-use helix_core::hashmap;
+use crate::keymap;
 
-pub fn default() -> HashMap<Mode, KeyTrie> {
+use super::{InputTrie, Mode};
+use helix_core::hashmap;
+use helix_view::input::{KeyEvent, MouseEvent};
+
+pub fn default_mouse() -> HashMap<Mode, InputTrie<MouseEvent>> {
+    let normal = keymap!({ "Normal mode"
+        "1-right" => yank_main_selection_to_primary_clipboard_mouse,
+        "scroll_up" => scroll_up_mouse,
+        "scroll_down" => scroll_down_mouse,
+        "A-1-middle" => replace_selections_with_primary_clipboard,
+        "1-middle" => paste_primary_clipboard_before_mouse,
+        "2-left" => [move_prev_word_start, move_next_word_start],
+
+    });
+    let insert = normal.clone();
+    let select = normal.clone();
+    hashmap!(
+        Mode::Normal => normal,
+        Mode::Insert => insert,
+        Mode::Select => select,
+    )
+}
+
+pub fn default() -> HashMap<Mode, InputTrie<KeyEvent>> {
     let normal = keymap!({ "Normal mode"
         "h" | "left" => move_char_left,
         "j" | "down" => move_visual_line_down,

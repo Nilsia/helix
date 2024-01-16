@@ -1,3 +1,5 @@
+use std::fmt;
+
 use bitflags::bitflags;
 
 bitflags! {
@@ -8,6 +10,35 @@ bitflags! {
         const CONTROL = 0b0000_0010;
         const ALT = 0b0000_0100;
         const NONE = 0b0000_0000;
+    }
+}
+
+impl fmt::Display for KeyModifiers {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_fmt(format_args!(
+            "{}{}{}",
+            if self.contains(KeyModifiers::SHIFT) {
+                "S-"
+            } else {
+                ""
+            },
+            if self.contains(KeyModifiers::ALT) {
+                "A-"
+            } else {
+                ""
+            },
+            if self.contains(KeyModifiers::CONTROL) {
+                "C-"
+            } else {
+                ""
+            },
+        ))
+    }
+}
+
+impl Default for KeyModifiers {
+    fn default() -> Self {
+        Self::NONE
     }
 }
 
@@ -212,7 +243,7 @@ impl From<crossterm::event::ModifierKeyCode> for ModifierKeyCode {
 }
 
 /// Represents a key.
-#[derive(Debug, PartialOrd, Ord, PartialEq, Eq, Clone, Copy, Hash)]
+#[derive(Debug, PartialOrd, Ord, PartialEq, Eq, Clone, Copy, Hash, Default)]
 pub enum KeyCode {
     /// Backspace key.
     Backspace,
@@ -249,6 +280,7 @@ pub enum KeyCode {
     /// `KeyCode::Char('c')` represents `c` character, etc.
     Char(char),
     /// Null.
+    #[default]
     Null,
     /// Escape key.
     Esc,

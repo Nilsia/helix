@@ -143,6 +143,13 @@ FLAGS:
             let _ = std::io::stdin().read(&mut []);
             Config::default()
         }
+        Err(ConfigLoadError::ErrorOnVerify(err)) => {
+            eprintln!("Bad config: {}", err);
+            eprintln!("Press <ENTER> to continue with default config");
+            use std::io::Read;
+            let _ = std::io::stdin().read(&mut []);
+            Config::default()
+        }
     };
 
     let syn_loader_conf = helix_core::config::user_syntax_loader().unwrap_or_else(|err| {

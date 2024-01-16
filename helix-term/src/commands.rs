@@ -51,20 +51,25 @@ use crate::{
     compositor::{self, Component, Compositor},
     filter_picker_entry,
     job::Callback,
-    keymap::ReverseKeymap,
+    keymap::{InputEvent, ReverseInputmap},
     ui::{
-        self, editor::InsertEvent, lsp::SignatureHelp, overlay::overlaid, CompletionItem, Picker,
-        Popup, Prompt, PromptEvent,
+        self,
+        editor::{pos_and_view, InsertEvent},
+        lsp::SignatureHelp,
+        overlay::overlaid,
+        CompletionItem, Picker, Popup, Prompt, PromptEvent,
     },
 };
 
 use crate::job::{self, Jobs};
+use core::panic;
 use futures_util::{stream::FuturesUnordered, TryStreamExt};
 use std::{
     collections::{HashMap, HashSet},
     fmt,
     future::Future,
     io::Read,
+    marker::PhantomData,
     num::NonZeroUsize,
 };
 
@@ -74,7 +79,10 @@ use std::{
 };
 
 use once_cell::sync::Lazy;
-use serde::de::{self, Deserialize, Deserializer};
+use serde::{
+    de::{self, Deserializer},
+    Deserialize,
+};
 use url::Url;
 
 use grep_regex::RegexMatcherBuilder;
@@ -91,6 +99,8 @@ pub struct Context<'a> {
     pub callback: Option<crate::compositor::Callback>,
     pub on_next_key_callback: Option<OnKeyCallback>,
     pub jobs: &'a mut Jobs,
+    /// (row, col)
+    pub mouse_pointer: (u16, u16),
 }
 
 impl<'a> Context<'a> {
@@ -162,7 +172,10 @@ use helix_view::{align_view, Align};
 /// :format. It causes a side-effect on the state (usually by creating and applying a transaction).
 /// Both of these types of commands can be mapped with keybindings in the config.toml.
 #[derive(Clone)]
-pub enum MappableCommand {
+pub enum MappableCommand<IE>
+where
+    IE: InputEvent + 'static,
+{
     Typable {
         name: String,
         args: Vec<String>,
@@ -173,6 +186,7 @@ pub enum MappableCommand {
         fun: fn(cx: &mut Context),
         doc: &'static str,
     },
+    PhantomData(PhantomData<IE>),
 }
 
 macro_rules! static_commands {
@@ -192,7 +206,10 @@ macro_rules! static_commands {
     }
 }
 
-impl MappableCommand {
+impl<IE> MappableCommand<IE>
+where
+    IE: InputEvent,
+{
     pub fn execute(&self, cx: &mut Context) {
         match &self {
             Self::Typable { name, args, doc: _ } => {
@@ -209,6 +226,7 @@ impl MappableCommand {
                 }
             }
             Self::Static { fun, .. } => (fun)(cx),
+            Self::PhantomData(_) => panic!("Error: PhandomData in MappableCommand"),
         }
     }
 
@@ -216,6 +234,7 @@ impl MappableCommand {
         match &self {
             Self::Typable { name, .. } => name,
             Self::Static { name, .. } => name,
+            Self::PhantomData(_) => panic!("Error: PhandomData in MappableCommand"),
         }
     }
 
@@ -223,6 +242,7 @@ impl MappableCommand {
         match &self {
             Self::Typable { doc, .. } => doc,
             Self::Static { doc, .. } => doc,
+            Self::PhantomData(_) => panic!("Error: PhandomData in MappableCommand"),
         }
     }
 
@@ -496,10 +516,18 @@ impl MappableCommand {
         record_macro, "Record macro",
         replay_macro, "Replay macro",
         command_palette, "Open command palette",
+        scroll_down_mouse, "Scroll view down with mouse line",
+        scroll_up_mouse, "Scroll view up with mouse line",
+        paste_primary_clipboard_before_mouse, "Paste primary clipboard before mouse",
+        yank_main_selection_to_primary_clipboard_mouse, "Yank Main selection to primary clipboard through mouse",
+
     );
 }
 
-impl fmt::Debug for MappableCommand {
+impl<IE> fmt::Debug for MappableCommand<IE>
+where
+    IE: InputEvent,
+{
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             MappableCommand::Static { name, .. } => {
@@ -510,17 +538,24 @@ impl fmt::Debug for MappableCommand {
                 .field(name)
                 .field(args)
                 .finish(),
+            _ => Ok(()),
         }
     }
 }
 
-impl fmt::Display for MappableCommand {
+impl<IE> fmt::Display for MappableCommand<IE>
+where
+    IE: InputEvent,
+{
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(self.name())
     }
 }
 
-impl std::str::FromStr for MappableCommand {
+impl<IE> std::str::FromStr for MappableCommand<IE>
+where
+    IE: InputEvent,
+{
     type Err = anyhow::Error;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
@@ -550,7 +585,10 @@ impl std::str::FromStr for MappableCommand {
     }
 }
 
-impl<'de> Deserialize<'de> for MappableCommand {
+impl<'de, IE> Deserialize<'de> for MappableCommand<IE>
+where
+    IE: InputEvent,
+{
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: Deserializer<'de>,
@@ -560,7 +598,10 @@ impl<'de> Deserialize<'de> for MappableCommand {
     }
 }
 
-impl PartialEq for MappableCommand {
+impl<IE> PartialEq for MappableCommand<IE>
+where
+    IE: InputEvent,
+{
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
             (
@@ -2916,11 +2957,14 @@ fn jumplist_picker(cx: &mut Context) {
     cx.push_layer(Box::new(overlaid(picker)));
 }
 
-impl ui::menu::Item for MappableCommand {
-    type Data = ReverseKeymap;
+impl<IE> ui::menu::Item for MappableCommand<IE>
+where
+    IE: InputEvent,
+{
+    type Data = ReverseInputmap<IE>;
 
     fn format(&self, keymap: &Self::Data) -> Row {
-        let fmt_binding = |bindings: &Vec<Vec<KeyEvent>>| -> String {
+        let fmt_binding = |bindings: &Vec<Vec<IE>>| -> String {
             bindings.iter().fold(String::new(), |mut acc, bind| {
                 if !acc.is_empty() {
                     acc.push(' ');
@@ -2941,6 +2985,7 @@ impl ui::menu::Item for MappableCommand {
                 Some(bindings) => format!("{} ({}) [{}]", doc, fmt_binding(bindings), name).into(),
                 None => format!("{} [{}]", doc, name).into(),
             },
+            MappableCommand::PhantomData(_) => panic!("Error: phantom data"),
         }
     }
 }
@@ -2955,7 +3000,8 @@ pub fn command_palette(cx: &mut Context) {
                 [&cx.editor.mode]
                 .reverse_map();
 
-            let mut commands: Vec<MappableCommand> = MappableCommand::STATIC_COMMAND_LIST.into();
+            let mut commands: Vec<MappableCommand<KeyEvent>> =
+                MappableCommand::STATIC_COMMAND_LIST.into();
             commands.extend(typed::TYPABLE_COMMAND_LIST.iter().map(|cmd| {
                 MappableCommand::Typable {
                     name: cmd.name.to_owned(),
@@ -2972,6 +3018,7 @@ pub fn command_palette(cx: &mut Context) {
                     callback: None,
                     on_next_key_callback: None,
                     jobs: cx.jobs,
+                    mouse_pointer: (0, 0),
                 };
                 let focus = view!(ctx.editor).id;
 
@@ -4063,6 +4110,15 @@ fn yank_main_selection_to_primary_clipboard(cx: &mut Context) {
     yank_primary_selection_impl(cx.editor, '*');
     exit_select_mode(cx);
 }
+fn yank_main_selection_to_primary_clipboard_mouse(cx: &mut Context) {
+    let editor = &mut cx.editor;
+    let (view, doc) = current!(editor);
+    if (doc.selection(view.id)).len() <= 1 {
+        return;
+    }
+
+    yank_primary_selection_impl(cx.editor, '*');
+}
 
 #[derive(Copy, Clone)]
 enum Paste {
@@ -4181,6 +4237,16 @@ fn paste_primary_clipboard_before(cx: &mut Context) {
     exit_select_mode(cx);
 }
 
+fn paste_primary_clipboard_before_mouse(cx: &mut Context) {
+    let (row, column) = cx.mouse_pointer;
+    let editor = &mut cx.editor;
+    if let Some((pos, view_id)) = pos_and_view(editor, row, column, true) {
+        let doc = doc_mut!(editor, &view!(editor, view_id).doc);
+        doc.set_selection(view_id, Selection::point(pos));
+        cx.editor.focus(view_id);
+    }
+    paste_primary_clipboard_before(cx)
+}
 fn replace_with_yanked(cx: &mut Context) {
     replace_with_yanked_impl(cx.editor, cx.register.unwrap_or('"'), cx.count());
     exit_select_mode(cx);
@@ -5111,6 +5177,37 @@ fn scroll_up(cx: &mut Context) {
 fn scroll_down(cx: &mut Context) {
     scroll(cx, cx.count(), Direction::Forward);
 }
+
+fn scroll_up_mouse(cx: &mut Context) {
+    let current_view = cx.editor.tree.focus;
+    match pos_and_view(cx.editor, cx.mouse_pointer.0, cx.mouse_pointer.1, false) {
+        Some((_, view_id)) => cx.editor.tree.focus = view_id,
+        None => return,
+    }
+    scroll(
+        cx,
+        cx.editor.config().scroll_lines.unsigned_abs(),
+        Direction::Backward,
+    );
+    cx.editor.tree.focus = current_view;
+    cx.editor.ensure_cursor_in_view(current_view);
+}
+fn scroll_down_mouse(cx: &mut Context) {
+    let current_view = cx.editor.tree.focus;
+    match pos_and_view(cx.editor, cx.mouse_pointer.0, cx.mouse_pointer.1, false) {
+        Some((_, view_id)) => cx.editor.tree.focus = view_id,
+        None => return,
+    }
+    scroll(
+        cx,
+        cx.editor.config().scroll_lines.unsigned_abs(),
+        Direction::Forward,
+    );
+    cx.editor.tree.focus = current_view;
+    cx.editor.ensure_cursor_in_view(current_view);
+}
+
+// fn move_selection_mouse(cx: &mut Context) {}
 
 fn goto_ts_object_impl(cx: &mut Context, object: &'static str, direction: Direction) {
     let count = cx.count();

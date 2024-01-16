@@ -10,6 +10,7 @@ use helix_view::{
     document::DocumentSavedEventResult,
     editor::{ConfigEvent, EditorEvent},
     graphics::Rect,
+    input::{KeyEvent, MouseEvent},
     theme,
     tree::Layout,
     Align, Editor,
@@ -148,7 +149,13 @@ impl Application {
         let keys = Box::new(Map::new(Arc::clone(&config), |config: &Config| {
             &config.keys
         }));
-        let editor_view = Box::new(ui::EditorView::new(Keymaps::new(keys)));
+        let mouses = Box::new(Map::new(Arc::clone(&config), |config: &Config| {
+            &config.mouse
+        }));
+        let editor_view = Box::new(ui::EditorView::new(
+            Keymaps::<KeyEvent>::new(keys),
+            Keymaps::<MouseEvent>::new(mouses),
+        ));
         compositor.push(editor_view);
 
         if args.load_tutor {
